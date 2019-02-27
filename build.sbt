@@ -14,7 +14,11 @@ lazy val commonSettings = Seq(
 
   libraryDependencies ++= Seq(
     "com.chuusai" %% "shapeless" % "2.3.3"
-  )
+  ),
+  scalacOptions += "-feature",
+  scalacOptions += "-deprecation"
+
+
 )
 
 lazy val core = (project in file("core"))
