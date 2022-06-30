@@ -3,9 +3,10 @@ import scala.language.experimental.macros
 import algebra.Eq
 import algebra.ring._
 import machinist.DefaultOps
-import spire.algebra.{IsReal, NRoot, Signed}
-import spire.math.{ConvertableFrom, ConvertableTo, Rational, Real, Integral}
+import spire.algebra.{IsReal, NRoot, Signed, TruncatedDivision}
+import spire.math.{ConvertableFrom, ConvertableTo, Integral, Rational, Real}
 
+import scala.annotation.tailrec
 import scala.language.higherKinds
 import scala.{specialized => sp}
 
@@ -13,6 +14,8 @@ trait Q2Like[T, @sp(Int,Long,Float,Double) A] { self =>
   def a(t: T): A
   def b(t: T): A
   def of(a: A, b: A): T
+  //private[q2] def cacheBits: Int
+  //private[q2] def cacheBits_=(value: Int): Unit
 }
 
 object Q2Like {
@@ -84,6 +87,7 @@ trait Q2[@sp(Int,Long,Float,Double) A] {
 
 object Q2 {
 
+
   case class Q2Double(a: Double, b: Double) extends Q2[Double] {
     def build(a: Double, b: Double) = Q2Double(a,b)
   }
@@ -98,6 +102,7 @@ object Q2 {
   }
   case class Q2Ref[A <: AnyRef](a: A, b: A) extends Q2[A]{
     def build(a: A, b: A) = Q2Ref(a,b)
+    def map[B <: AnyRef](f: A => B): Q2Ref[B] = Q2Ref(f(a),f(b))
   }
   case class Q2Generic[A](a: A, b: A) extends Q2[A]{
     def build(a: A, b: A) = Q2Generic(a,b)
@@ -118,125 +123,112 @@ object Q2Functions {
   import Q2Like.syntax._
   import spire.syntax.all._
 
-  def zero[T, A : AdditiveMonoid](implicit q2: Q2Like[T,A]): T = {
-    val am = implicitly[AdditiveMonoid[A]]
+  //TODO - Should figure out a way to expose a signum cache in Q2Like and use it here?
+  // Or do we leave that to the implementers...
 
-    defQ2(am.zero,am.zero)
+  def zero[T, A](implicit q2: Q2Like[T,A], ev: AdditiveMonoid[A]): T = {
+    defQ2(ev.zero,ev.zero)
   }
 
-  def plus[T, @sp(Int,Long,Float,Double) A : AdditiveSemigroup](x: T, y: T)(implicit q2: Q2Like[T,A]): T = {
+  def plus[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: AdditiveSemigroup[A]): T = {
     defQ2(x.a + y.a, x.b + y.b)
   }
 
-  def minus[T, @sp(Int,Long,Float,Double) A : AdditiveGroup](x: T, y:T)(implicit q2: Q2Like[T,A]): T = {
+  def minus[T, @sp(Int,Long,Float,Double) A](x: T, y:T)(implicit q2: Q2Like[T,A], ev: AdditiveGroup[A]): T = {
     defQ2(x.a - y.a, x.b - y.b)
   }
 
-  def negate[T, @sp(Int,Long,Float,Double) A : AdditiveGroup](x: T)(implicit q2: Q2Like[T,A]): T = {
+  def negate[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: AdditiveGroup[A]): T = {
     defQ2(-x.a, -x.b)
   }
 
-  def conjugate[T, @sp(Int,Long,Float,Double) A : AdditiveGroup](x: T)(implicit q2: Q2Like[T,A]): T = {
+  def conjugate[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: AdditiveGroup[A]): T = {
     defQ2(x.a, -x.b)
   }
-  def one[T, @sp(Int,Long,Float,Double) A : Rig](implicit q2: Q2Like[T,A]): T = {
-    val ar = implicitly[Rig[A]]
-    defQ2(ar.one,ar.zero)
+  def one[T, @sp(Int,Long,Float,Double) A](implicit q2: Q2Like[T,A], ev: Rig[A]): T = {
+    defQ2(ev.one,ev.zero)
   }
-  def fundamentalUnit[T, @sp(Int,Long,Float,Double) A : Rig](implicit q2: Q2Like[T,A]): T = {
-    val ar = implicitly[Rig[A]]
-    defQ2(ar.one,ar.one)
+  def fundamentalUnit[T, @sp(Int,Long,Float,Double) A](implicit q2: Q2Like[T,A], ev: Rig[A]): T = {
+    defQ2(ev.one,ev.one)
   }
 
-  def times[T, @sp(Int,Long,Float,Double) A : Semiring](x: T, y:T)(implicit q2: Q2Like[T,A]): T = {
+  def times[T, @sp(Int,Long,Float,Double) A](x: T, y:T)(implicit q2: Q2Like[T,A], cr: Semiring[A]): T = {
+  //def times[T, @sp(Int,Long,Float,Double) A](x: T, y:T)(implicit cr: Semiring[A], q2: Q2Like[T,A]): T = {
     val bprod = x.b * y.b
     defQ2(x.a * y.a + bprod + bprod, x.a * y.b + x.b * y.a)
   }
 
-  def signedFieldNorm[T, @sp(Int,Long,Float,Double) A : CommutativeRng](x: T)(implicit q2: Q2Like[T,A]): A = {
+  def baseTimesR[T, @sp(Int,Long,Float,Double) A](x: T, y:A)(implicit q2: Q2Like[T,A], ev: Semiring[A]): T = {
+    defQ2(x.a * y, x.b * y)
+  }
+  def baseTimesL[T, @sp(Int,Long,Float,Double) A](x: A, y:T)(implicit q2: Q2Like[T,A], ev: Semiring[A]): T = {
+    defQ2(x * y.a, x * y.b)
+  }
+
+  def signedFieldNorm[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: CommutativeRng[A]): A = {
     val xbsq = x.b * x.b
     x.a * x.a - xbsq - xbsq
   }
 
-  def posFieldNorm[T, @sp(Int,Long,Float,Double) A : CommutativeRng : Signed](x: T)(implicit q2: Q2Like[T,A]): A = {
-    val xbsq = x.b * x.b
-    implicitly[Signed[A]].abs(x.a * x.a - xbsq - xbsq)
+  def reciprocalFraction[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: CommutativeRng[A]): (T,A) = {
+    (conjugate(x),signedFieldNorm(x))
+  }
+  def divFraction[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: CommutativeRng[A]): (T,A) = {
+    (times(x,conjugate(y)),signedFieldNorm(y))
   }
 
-  def div[T, @sp(Int,Long,Float,Double) A : Field](x: T, y:T)(implicit q2: Q2Like[T,A]): T = {
-    val af = implicitly[Field[A]]
-
-    val n = af.reciprocal({
-      val ybsq = y.b * y.b
-      y.a * y.a - ybsq - ybsq
-    })
-    val bprod = x.b * y.b
-    val ra = x.a * y.a - bprod - bprod
-    val rb = x.b * y.a - x.a * y.b
-
-    defQ2(n * ra , n * rb)
+  //def
+  def reciprocal[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: Field[A]): T = {
+    val (n,d) = reciprocalFraction(x)
+    baseTimesR(n,d.reciprocal())
   }
 
-  def eqv[T, @sp(Int,Long,Float,Double) A : Eq](x: T, y:T)(implicit q2: Q2Like[T,A]): Boolean = {
+  def div[T, @sp(Int,Long,Float,Double) A](x: T, y:T)(implicit q2: Q2Like[T,A], ev: Field[A]): T = {
+    val (n,d) = divFraction(x,y)
+    baseTimesR(n,d.reciprocal())
+  }
+
+  def posFieldNorm[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: CommutativeRng[A], ev2: Signed[A]): A = {
+    ev2.abs(signedFieldNorm(x))
+  }
+
+
+  def eqv[T, @sp(Int,Long,Float,Double) A](x: T, y:T)(implicit q2: Q2Like[T,A], ev: Eq[A]): Boolean = {
     x.a === y.a && x.b === y.b
   }
 
-  def neqv[T, @sp(Int,Long,Float,Double) A : Eq](x: T, y:T)(implicit q2: Q2Like[T,A]): Boolean = {
+  def neqv[T, @sp(Int,Long,Float,Double) A](x: T, y:T)(implicit q2: Q2Like[T,A], ev: Eq[A]): Boolean = {
     x.a =!= y.a || x.b =!= y.b
   }
 
-  def fromBigInt[T, @sp(Int,Long,Float,Double) A : Ring](n: BigInt)(implicit q2: Q2Like[T,A]): T = {
-    val ar = implicitly[Ring[A]]
-    defQ2(ar.fromBigInt(n), ar.zero)
+  def fromBigInt[T, @sp(Int,Long,Float,Double) A](n: BigInt)(implicit q2: Q2Like[T,A], ev: Ring[A]): T = {
+    defQ2(ev.fromBigInt(n), ev.zero)
   }
 
-  def fromInt[T, @sp(Int,Long,Float,Double) A : Ring](n: Int)(implicit q2: Q2Like[T,A]): T = {
-    val ar = implicitly[Ring[A]]
-    defQ2(ar.fromInt(n), ar.zero)
+  def fromInt[T, @sp(Int,Long,Float,Double) A](n: Int)(implicit q2: Q2Like[T,A], ev: Ring[A]): T = {
+    defQ2(ev.fromInt(n), ev.zero)
   }
 
-  def fromDouble[T, @sp(Int,Long,Float,Double) A : Field](n: Int)(implicit q2: Q2Like[T,A]): T = {
-    val af = implicitly[Field[A]]
-    defQ2(af.fromDouble(n), af.zero)
+  def fromDouble[T, @sp(Int,Long,Float,Double) A](n: Int)(implicit q2: Q2Like[T,A], ev: Field[A]): T = {
+    defQ2(ev.fromDouble(n), ev.zero)
   }
 
-  def isOne[T, @sp(Int,Long,Float,Double) A : Rig : Eq](x: T)(implicit q2: Q2Like[T,A]): Boolean = {
-    val ar = implicitly[Rig[A]]
-    ar.isOne(x.a) && ar.isZero(x.b)
+  def isOne[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: Rig[A], ev2: Eq[A]): Boolean = {
+    ev.isOne(x.a) && ev.isZero(x.b)
   }
 
-  def isZero[T, @sp(Int,Long,Float,Double) A : AdditiveMonoid : Eq](x: T)(implicit q2: Q2Like[T,A]): Boolean = {
-    val am = implicitly[AdditiveMonoid[A]]
-    am.isZero(x.a) && am.isZero(x.b)
+  def isZero[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: AdditiveMonoid[A], ev2: Eq[A]): Boolean = {
+    ev.isZero(x.a) && ev.isZero(x.b)
   }
 
-  def sumN[T, @sp(Int,Long,Float,Double) A : AdditiveSemigroup](x: T, n: Int)(implicit q2: Q2Like[T,A]): T = {
-    val as = implicitly[AdditiveSemigroup[A]]
-    q2.of(as.sumN(x.a,n), as.sumN(x.b,n))
+  def sumN[T, @sp(Int,Long,Float,Double) A](x: T, n: Int)(implicit q2: Q2Like[T,A], ev: AdditiveSemigroup[A]): T = {
+    q2.of(ev.sumN(x.a,n), ev.sumN(x.b,n))
   }
 
 
 
-  def compare[T, @sp(Int,Long,Float,Double) A : Rng : Signed](x: T, y: T)(implicit q2: Q2Like[T,A]): Int = {
-    val a = x.a - y.a
-    val b = y.b - x.a
 
-    val as = a.signum()
-    val bs = b.signum()
-
-    if (bs == 0) as
-    else if (as != bs) -bs
-    else {
-      val asq = a * a
-      val bsq = b * b
-      val c = (asq - bsq).compare(bsq)
-      if (as > 0) c
-      else if (c < 0) 1
-      else -c
-    }
-  }
-
-  def signum[T, @sp(Int,Long,Float,Double) A : Rng : Signed](x: T)(implicit q2: Q2Like[T,A]): Int = {
+  def signum[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: Rng[A], ev2: Signed[A]): Int = {
     val a = x.a
     val b = x.b
 
@@ -253,45 +245,47 @@ object Q2Functions {
       if (as > 0) s else -s
     }
   }
-  def abs[T, @sp(Int,Long,Float,Double) A : Rng : Signed](x: T)(implicit q2: Q2Like[T,A]): T = {
+
+  def compare[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: Rng[A], ev2: Signed[A]): Int = {
+    signum(minus(y,x))
+  }
+
+  def abs[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: Rng[A], ev2: Signed[A]): T = {
     if (signum(x) >= 0) x
     else negate(x)
   }
 
-  def isWhole[T, @sp(Int,Long,Float,Double) A : IsReal](x: T)(implicit q2: Q2Like[T,A]): Boolean = {
-    val ev = implicitly[IsReal[A]]
+  def isWhole[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: IsReal[A]): Boolean = {
     ev.isSignZero(x.b) && ev.isWhole(x.a)
   }
 
-  def toDouble[T, @sp(Int,Long,Float,Double) A : IsReal](x: T)(implicit q2: Q2Like[T,A]): Double = {
-    //x.a.toDouble()
-    val ev = implicitly[IsReal[A]]
+  def toDouble[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: IsReal[A]): Double = {
     ev.toDouble(x.a) + 1.4142135623730951 *  ev.toDouble(x.b)
   }
 
-  def toReal[T, @sp(Int,Long,Float,Double) A : IsReal](x: T)(implicit q2: Q2Like[T,A]): Real = {
-    //x.a.toDouble()
-    val ev = implicitly[IsReal[A]]
+  def toReal[T, @sp(Int,Long,Float,Double) A](x: T)(implicit q2: Q2Like[T,A], ev: IsReal[A]): Real = {
     ev.toReal(x.a) + Real(2).nroot(2) *  ev.toReal(x.b)
   }
 
-  def equotmodBasicImpl[T, @sp(Int,Long,Float,Double) A : Integral](x: T, y: T)(implicit q2: Q2Like[T,A]): (T,T) = {
-    val ev = implicitly[Integral[A]]
 
-    if (isZero(y)) throw new ArithmeticException()
+  /**
+    * Returns x/y, rounded to the nearest integer.
+    *
+    */
+  private[q2] def roundQuot[@sp(Int,Long,Float,Double) A : TruncatedDivision : CommutativeRing](x: A, y: A): (A) = {
+    //x / y
 
-    val xr = Q2(x.a.toRational(),x.b.toRational())
-    val yr = Q2(y.a.toRational(),y.b.toRational())
-    import Rational.RationalAlgebra
-    val er = div(xr,yr)
+    val ys = y.signum()
+    require(ys != 0)
+    val (lower,r) = x.fquotmod(y)
+    val chk = y.compare(r + r)
 
-    val q = defQ2(ev.fromRational(er.a.round), ev.fromRational(er.b.round))
-    val qy = times(q,y)(ev,q2)
-    val r = minus(x, qy)(ev,q2)
-    (q,r)
+    val roundUp = (chk < 0) ^ (ys < 0)
+
+    if (roundUp) lower + implicitly[CommutativeRing[A]].one else lower
   }
 
-  def equotmod[T, @sp(Int,Long,Float,Double) A : Integral](x: T, y: T)(implicit q2: Q2Like[T,A]): (T,T) = {
+  def equotmod[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: TruncatedDivision[A], ev2: CommutativeRing[A]): (T,T) = {
     //Euclidean quotient/mod uperation using the "absFieldnorm"
 
     //Goal: given x,y Find q,r s.t   x = yq + r  and absFieldNorm(r) < absFieldNorm(y)
@@ -307,12 +301,43 @@ object Q2Functions {
     //  So... For general x,y, Let e = x/y (symbolically).  Then take q to be z2(round(e.a),round(e.b)).  Then
     //  r is just x - qy  (or y(e-q), whichever is easier).
     //
+    val (en,ed) = divFraction(x,y)
+    val q = defQ2(roundQuot(en.a,ed), roundQuot(en.b,ed))
+    val r = minus(x,times(q,y))
+    (q,r)
+  }
 
-    ???
+  def equot[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: TruncatedDivision[A], ev2: CommutativeRing[A]): T = {
+    val (en,ed) = divFraction(x,y)
+    val q = defQ2(roundQuot(en.a,ed), roundQuot(en.b,ed))
+    q
+  }
+  def emod[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: TruncatedDivision[A], ev2: CommutativeRing[A]): T = {
+    equotmod(x,y)._2
+  }
+
+
+  def gcd[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: TruncatedDivision[A], ev2: CommutativeRing[A]): T = {
+    import spire.syntax.ring._
+    if (isZero(x)) {
+      return y
+    }
+    @tailrec
+    def gcd0(y1: T, y2: T): T = {
+      if (isZero(y2)) y1
+      else {
+        gcd0(y2, emod(y1,y2))
+      }
+    }
+    gcd0(x,y)
+  }
+
+  def lcm[T, @sp(Int,Long,Float,Double) A](x: T, y: T)(implicit q2: Q2Like[T,A], ev: TruncatedDivision[A], ev2: CommutativeRing[A]): T = {
+    val (n,d) = divFraction(times(x,y),gcd(x,y))
+    defQ2(ev.fquot(n.a,d),ev.fquot(n.b,d))
   }
 
   //def q2[T, @sp(Int,Long,Float,Double) A](x: A, y: A)(implicit q2: Q2Like[T,A]): A =
-
   //private final val doubler2 = 1.4142135623730951
   //private val rsq2 =
 }
